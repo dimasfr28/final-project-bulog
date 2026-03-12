@@ -17,6 +17,7 @@ build/
 .venv/
 venv/
 env/
+*.txt
 
 # Node / React
 node_modules/
