@@ -9,7 +9,8 @@ from app.config import settings
 app = FastAPI(
     title="BULOG Dashboard API",
     description="API untuk BULOG Jatim Dashboard dengan Autentikasi",
-    version="1.0.0"
+    version="1.0.0",
+    root_path="/analisa-harga-beras-perumbulog/b4ck3end"
 )
 
 # CORS middleware
