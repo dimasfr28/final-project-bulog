@@ -20,6 +20,8 @@ app.add_middleware(
         "http://localhost",
         "http://dimasfirmansyah.site",
         "https://dimasfirmansyah.site",
+        "http://perumbulog.dimasfirmansyah.site",
+        "https://perumbulog.dimasfirmansyah.site",
     ],
     allow_credentials=True,
     allow_methods=["*"],
