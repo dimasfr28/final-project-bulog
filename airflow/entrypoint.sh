@@ -2,4 +2,4 @@
 set -e
 
 airflow db init
-exec airflow webserver
+exec airflow standalone
