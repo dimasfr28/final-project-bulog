@@ -2,4 +2,4 @@
 set -e
 
 airflow db migrate
-exec airflow "$@"
+exec airflow webserver
