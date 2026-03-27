@@ -1,5 +1,5 @@
 #!/bin/bash
 set -e
 
-airflow db init
-exec airflow standalone
+airflow db migrate
+exec airflow "$@"

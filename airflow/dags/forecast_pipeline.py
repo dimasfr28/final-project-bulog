@@ -228,9 +228,7 @@ def task_resample_split(**context):
         s = sw[name]
         print(f"  {name:<20}: {len(s)} minggu | {s.index[0].date()} -> {s.index[-1].date()}")
 
-    # Versi pasar tanpa weekend untuk align exog ke konsumen/produsen
-    sw_M_pasar_w = resample_mingguan(dfs["df_M_pasar"], include_weekend=False)
-    sw_P_pasar_w = resample_mingguan(dfs["df_P_pasar"], include_weekend=False)
+    # (tidak ada versi _w terpisah, semua pakai include_weekend=False)
 
     # Cell 46: Train-test split
     def split_tt(series, ratio=TEST_RATIO):
@@ -251,19 +249,16 @@ def task_resample_split(**context):
         ti.xcom_push(key=f"train_{name.replace('df_','')}", value=series_to_xcom(train))
         ti.xcom_push(key=f"test_{name.replace('df_','')}", value=series_to_xcom(test))
 
-    ti.xcom_push(key="sw_M_pasar_w", value=series_to_xcom(sw_M_pasar_w))
-    ti.xcom_push(key="sw_P_pasar_w", value=series_to_xcom(sw_P_pasar_w))
-
 
 def task_evaluasi_model(**context):
     """
     Cells 49-59: Evaluasi model fixed (train-test split)
-    - df_M_pasar    : ARIMA(2,0,3)+GARCH(1,1)
+    - df_M_pasar    : ARIMA(1,0,2)+GARCH(1,1)
     - df_P_pasar    : ARIMA(1,0,2)+GARCH(1,1)
     - df_M_konsumen : ARIMAX(6,0,4) tanpa GARCH, exog predicted M_pasar
-    - df_P_konsumen : ARIMAX(1,0,4)+GARCH(1,1), exog predicted P_pasar
-    - df_M_produsen : SARIMAX(1,1,4)(0,0,0,52), exog predicted M_pasar + M_konsumen
-    - df_P_produsen : SARIMAX(1,1,7)(0,0,1,52), exog predicted P_pasar
+    - df_P_konsumen : ARIMAX(1,0,5)+GARCH(1,1), exog predicted P_pasar
+    - df_M_produsen : SARIMAX(9,1,4)(0,0,0,52)+GARCH(1,1), exog predicted M_pasar
+    - df_P_produsen : SARIMAX(5,1,6)(0,0,0,52) tanpa GARCH, exog predicted P_pasar + P_konsumen
     """
     from statsmodels.tsa.arima.model import ARIMA
     from utils.forecast_functions import (
@@ -288,14 +283,17 @@ def task_evaluasi_model(**context):
     train_P_produsen = load_series("train_P_produsen")
     test_P_produsen  = load_series("test_P_produsen")
 
-    sw_M_pasar_w = load_series("sw_M_pasar_w")
-    sw_P_pasar_w = load_series("sw_P_pasar_w")
+    sw_M_pasar    = load_series("sw_M_pasar")
+    sw_P_pasar    = load_series("sw_P_pasar")
     sw_M_konsumen = load_series("sw_M_konsumen")
+    sw_P_konsumen = load_series("sw_P_konsumen")
+    sw_M_produsen = load_series("sw_M_produsen")
+    sw_P_produsen = load_series("sw_P_produsen")
 
-    # Cell 49: df_M_pasar — ARIMA(2,0,3)+GARCH(1,1)
-    print("\n=== df_M_pasar — ARIMA(2,0,3)+GARCH(1,1) ===")
+    # Cell 49: df_M_pasar — ARIMA(1,0,2)+GARCH(1,1)
+    print("\n=== df_M_pasar — ARIMA(1,0,2)+GARCH(1,1) ===")
     fc_M_pasar, metrik_M_pasar, lo_M_pasar, hi_M_pasar = fit_arima_fixed(
-        train_M_pasar, test_M_pasar, order=(2, 0, 3)
+        train_M_pasar, test_M_pasar, order=(1, 0, 2)
     )
 
     # Cell 51: df_P_pasar — ARIMA(1,0,2)+GARCH(1,1)
@@ -305,11 +303,11 @@ def task_evaluasi_model(**context):
     )
 
     # Cell 53: df_M_konsumen — ARIMAX(6,0,4) tanpa GARCH
-    print("\n=== df_M_konsumen — ARIMAX(6,0,4) ===")
-    _m_pasar_for_M_kons  = ARIMA(train_M_pasar, order=(2, 0, 3)).fit()
-    _fc_pasar_for_M_kons = _m_pasar_for_M_kons.forecast(steps=len(test_M_konsumen)).values
-
-    exog_tr_M_kons = align_exog(sw_M_pasar_w, train_M_konsumen.index)
+    print("\n=== df_M_konsumen — ARIMAX(6,0,4) tanpa GARCH ===")
+    _exog_M_kons_full = align_exog(sw_M_pasar, sw_M_konsumen.index)
+    exog_tr_M_kons    = _exog_M_kons_full[:len(train_M_konsumen)]
+    _m_pasar_for_M_kons  = ARIMA(exog_tr_M_kons.flatten(), order=(1, 0, 2)).fit()
+    _fc_pasar_for_M_kons = np.array(_m_pasar_for_M_kons.forecast(steps=len(test_M_konsumen)))
     exog_te_M_kons = _fc_pasar_for_M_kons.reshape(-1, 1)
 
     fc_M_konsumen, metrik_M_konsumen, lo_M_konsumen, hi_M_konsumen = fit_arima_fixed(
@@ -317,57 +315,62 @@ def task_evaluasi_model(**context):
         order=(6, 0, 4),
         exog_train=exog_tr_M_kons,
         exog_test=exog_te_M_kons,
+        force_no_garch=True,
     )
 
-    # Cell 55: df_P_konsumen — ARIMAX(1,0,4)+GARCH(1,1)
-    print("\n=== df_P_konsumen — ARIMAX(1,0,4)+GARCH(1,1) ===")
-    _m_pasar_for_P_kons  = ARIMA(train_P_pasar, order=(1, 0, 2)).fit()
-    _fc_pasar_for_P_kons = _m_pasar_for_P_kons.forecast(steps=len(test_P_konsumen)).values
-
-    exog_tr_P_kons = align_exog(sw_P_pasar_w, train_P_konsumen.index)
+    # Cell 55: df_P_konsumen — ARIMAX(1,0,5)+GARCH(1,1)
+    print("\n=== df_P_konsumen — ARIMAX(1,0,5)+GARCH(1,1) ===")
+    _exog_P_kons_full = align_exog(sw_P_pasar, sw_P_konsumen.index)
+    exog_tr_P_kons    = _exog_P_kons_full[:len(train_P_konsumen)]
+    _m_pasar_for_P_kons  = ARIMA(exog_tr_P_kons.flatten(), order=(1, 0, 2)).fit()
+    _fc_pasar_for_P_kons = np.array(_m_pasar_for_P_kons.forecast(steps=len(test_P_konsumen)))
     exog_te_P_kons = _fc_pasar_for_P_kons.reshape(-1, 1)
 
     fc_P_konsumen, metrik_P_konsumen, lo_P_konsumen, hi_P_konsumen = fit_arima_fixed(
         train_P_konsumen, test_P_konsumen,
-        order=(1, 0, 4),
+        order=(1, 0, 5),
         exog_train=exog_tr_P_kons,
         exog_test=exog_te_P_kons,
     )
 
-    # Cell 57: df_M_produsen — SARIMAX(1,1,4)(0,0,0,52)
-    print("\n=== df_M_produsen — SARIMAX(1,1,4)(0,0,0,52) ===")
-    _fc_pasar_for_M_prod = _m_pasar_for_M_kons.forecast(steps=len(test_M_produsen)).values
-
-    _m_kons_for_M_prod  = ARIMA(train_M_konsumen, order=(6, 0, 4),
-                                 exog=align_exog(sw_M_pasar_w, train_M_konsumen.index)).fit()
-    _fc_kons_for_M_prod = _m_kons_for_M_prod.forecast(
-        steps=len(test_M_produsen), exog=_fc_pasar_for_M_prod.reshape(-1, 1)
-    ).values
-
-    exog_tr_M_prod = align_exog_multi([sw_M_pasar_w, sw_M_konsumen], train_M_produsen.index)
-    exog_te_M_prod = np.column_stack([_fc_pasar_for_M_prod, _fc_kons_for_M_prod])
+    # Cell 57: df_M_produsen — SARIMAX(9,1,4)(0,0,0,52)+GARCH(1,1)
+    print("\n=== df_M_produsen — SARIMAX(9,1,4)(0,0,0,52)+GARCH(1,1) ===")
+    _exog_M_prod_full = align_exog(sw_M_pasar, sw_M_produsen.index)
+    exog_tr_M_prod    = _exog_M_prod_full[:len(train_M_produsen)]
+    _m_pasar_for_M_prod  = ARIMA(exog_tr_M_prod.flatten(), order=(1, 0, 2)).fit()
+    _fc_pasar_for_M_prod = np.array(_m_pasar_for_M_prod.forecast(steps=len(test_M_produsen)))
+    exog_te_M_prod = _fc_pasar_for_M_prod.reshape(-1, 1)
 
     fc_M_produsen, metrik_M_produsen, lo_M_produsen, hi_M_produsen = fit_sarimax_fixed(
         train_M_produsen, test_M_produsen,
-        order=(1, 1, 4),
+        order=(9, 1, 4),
         seasonal_order=(0, 0, 0, 52),
         exog_train=exog_tr_M_prod,
         exog_test=exog_te_M_prod,
     )
 
-    # Cell 59: df_P_produsen — SARIMAX(1,1,7)(0,0,1,52)
-    print("\n=== df_P_produsen — SARIMAX(1,1,7)(0,0,1,52) ===")
-    _fc_pasar_for_P_prod = _m_pasar_for_P_kons.forecast(steps=len(test_P_produsen)).values
+    # Cell 59: df_P_produsen — SARIMAX(5,1,6)(0,0,0,52) tanpa GARCH
+    print("\n=== df_P_produsen — SARIMAX(5,1,6)(0,0,0,52) tanpa GARCH ===")
+    _exog_P_prod_pasar_full = align_exog(sw_P_pasar, sw_P_produsen.index)
+    exog_tr_P_prod_pasar    = _exog_P_prod_pasar_full[:len(train_P_produsen)]
+    _m_pasar_for_P_prod     = ARIMA(exog_tr_P_prod_pasar.flatten(), order=(1, 0, 2)).fit()
+    _fc_pasar_for_P_prod    = np.array(_m_pasar_for_P_prod.forecast(steps=len(test_P_produsen)))
 
-    exog_tr_P_prod = align_exog(sw_P_pasar_w, train_P_produsen.index)
-    exog_te_P_prod = _fc_pasar_for_P_prod.reshape(-1, 1)
+    _exog_P_prod_kons_full = align_exog(sw_P_konsumen, sw_P_produsen.index)
+    exog_tr_P_prod_kons    = _exog_P_prod_kons_full[:len(train_P_produsen)]
+    _m_kons_for_P_prod     = ARIMA(exog_tr_P_prod_kons.flatten(), order=(1, 0, 2)).fit()
+    _fc_kons_for_P_prod    = np.array(_m_kons_for_P_prod.forecast(steps=len(test_P_produsen)))
+
+    exog_tr_P_prod = np.hstack([exog_tr_P_prod_pasar, exog_tr_P_prod_kons])
+    exog_te_P_prod = np.column_stack([_fc_pasar_for_P_prod, _fc_kons_for_P_prod])
 
     fc_P_produsen, metrik_P_produsen, lo_P_produsen, hi_P_produsen = fit_sarimax_fixed(
         train_P_produsen, test_P_produsen,
-        order=(1, 1, 7),
-        seasonal_order=(0, 0, 1, 52),
+        order=(5, 1, 6),
+        seasonal_order=(0, 0, 0, 52),
         exog_train=exog_tr_P_prod,
         exog_test=exog_te_P_prod,
+        force_no_garch=True,
     )
 
     # Cell 61: Ringkasan evaluasi
@@ -412,8 +415,6 @@ def task_final_forecast(**context):
     sw_P_konsumen = load_series("sw_P_konsumen")
     sw_M_produsen = load_series("sw_M_produsen")
     sw_P_produsen = load_series("sw_P_produsen")
-    sw_M_pasar_w  = load_series("sw_M_pasar_w")
-    sw_P_pasar_w  = load_series("sw_P_pasar_w")
 
     def make_fc_dates(series, n=FORECAST_HORIZON):
         last = series.index[-1]
@@ -421,7 +422,7 @@ def task_final_forecast(**context):
 
     # Cell 65: Final df_M_pasar
     print("\n=== Final Forecast df_M_pasar ===")
-    m_final_M_pasar  = ARIMA(sw_M_pasar, order=(2, 0, 3)).fit()
+    m_final_M_pasar  = ARIMA(sw_M_pasar, order=(1, 0, 2)).fit()
     final_fc_M_pasar = m_final_M_pasar.forecast(steps=FORECAST_HORIZON).values
     fc_dates_M_pasar = make_fc_dates(sw_M_pasar)
     print("  df_M_pasar forecast:", final_fc_M_pasar.round(2))
@@ -433,9 +434,9 @@ def task_final_forecast(**context):
     fc_dates_P_pasar = make_fc_dates(sw_P_pasar)
     print("  df_P_pasar forecast:", final_fc_P_pasar.round(2))
 
-    # Cell 69: Final df_M_konsumen
+    # Cell 69: Final df_M_konsumen — ARIMAX(6,0,4) tanpa GARCH
     print("\n=== Final Forecast df_M_konsumen ===")
-    exog_full_M_kons = align_exog(sw_M_pasar_w, sw_M_konsumen.index)
+    exog_full_M_kons = align_exog(sw_M_pasar, sw_M_konsumen.index)
     exog_fc_M_kons   = np.array(final_fc_M_pasar).reshape(-1, 1)
 
     m_final_M_kons = ARIMA(sw_M_konsumen, order=(6, 0, 4), exog=exog_full_M_kons).fit()
@@ -443,44 +444,41 @@ def task_final_forecast(**context):
     fc_dates_M_konsumen = make_fc_dates(sw_M_konsumen)
     print("  df_M_konsumen forecast:", final_fc_M_konsumen.round(2))
 
-    # Cell 71: Final df_P_konsumen
+    # Cell 71: Final df_P_konsumen — ARIMAX(1,0,5)+GARCH(1,1)
     print("\n=== Final Forecast df_P_konsumen ===")
-    exog_full_P_kons = align_exog(sw_P_pasar_w, sw_P_konsumen.index)
+    exog_full_P_kons = align_exog(sw_P_pasar, sw_P_konsumen.index)
     exog_fc_P_kons   = np.array(final_fc_P_pasar).reshape(-1, 1)
 
-    m_final_P_kons = ARIMA(sw_P_konsumen, order=(1, 0, 4), exog=exog_full_P_kons).fit()
+    m_final_P_kons = ARIMA(sw_P_konsumen, order=(1, 0, 5), exog=exog_full_P_kons).fit()
     final_fc_P_konsumen = m_final_P_kons.forecast(steps=FORECAST_HORIZON, exog=exog_fc_P_kons).values
     fc_dates_P_konsumen = make_fc_dates(sw_P_konsumen)
     print("  df_P_konsumen forecast:", final_fc_P_konsumen.round(2))
 
-    # Cell 73: Final df_M_produsen
+    # Cell 73: Final df_M_produsen — SARIMAX(9,1,4)(0,0,0,52)+GARCH(1,1)
     print("\n=== Final Forecast df_M_produsen ===")
-    exog_full_M_prod = align_exog_multi([sw_M_pasar_w, sw_M_konsumen], sw_M_produsen.index)
+    exog_full_M_prod = align_exog(sw_M_pasar, sw_M_produsen.index)
+    exog_fc_M_prod   = np.array(final_fc_M_pasar).reshape(-1, 1)
 
-    exog_fc_M_kons_for_prod = np.array(final_fc_M_pasar).reshape(-1, 1)
-    exog_fc_M_kons_arr      = m_final_M_kons.forecast(steps=FORECAST_HORIZON,
-                                                       exog=exog_fc_M_kons_for_prod).values
-
-    exog_fc_M_prod = np.column_stack([
-        np.array(final_fc_M_pasar),
-        exog_fc_M_kons_arr,
-    ])
-
-    m_final_M_prod = SARIMAX(sw_M_produsen, exog=exog_full_M_prod,
-                              order=(1, 1, 4), seasonal_order=(0, 0, 0, 52),
+    m_final_M_prod = SARIMAX(sw_M_produsen, order=(9, 1, 4),
+                              seasonal_order=(0, 0, 0, 52),
+                              exog=exog_full_M_prod,
                               enforce_stationarity=False,
                               enforce_invertibility=False).fit(disp=False)
     final_fc_M_produsen = m_final_M_prod.forecast(steps=FORECAST_HORIZON, exog=exog_fc_M_prod).values
     fc_dates_M_produsen = make_fc_dates(sw_M_produsen)
     print("  df_M_produsen forecast:", final_fc_M_produsen.round(2))
 
-    # Cell 75: Final df_P_produsen
+    # Cell 75: Final df_P_produsen — SARIMAX(5,1,6)(0,0,0,52) tanpa GARCH
     print("\n=== Final Forecast df_P_produsen ===")
-    exog_full_P_prod = align_exog(sw_P_pasar_w, sw_P_produsen.index)
-    exog_fc_P_prod   = np.array(final_fc_P_pasar).reshape(-1, 1)
+    exog_full_P_prod = align_exog_multi([sw_P_pasar, sw_P_konsumen], sw_P_produsen.index)
+    exog_fc_P_kons_for_prod = np.array(final_fc_P_pasar).reshape(-1, 1)
+    exog_fc_P_kons_arr      = m_final_P_kons.forecast(steps=FORECAST_HORIZON,
+                                                       exog=exog_fc_P_kons_for_prod).values
+    exog_fc_P_prod = np.column_stack([np.array(final_fc_P_pasar), exog_fc_P_kons_arr])
 
-    m_final_P_prod = SARIMAX(sw_P_produsen, exog=exog_full_P_prod,
-                              order=(1, 1, 7), seasonal_order=(0, 0, 1, 52),
+    m_final_P_prod = SARIMAX(sw_P_produsen, order=(5, 1, 6),
+                              seasonal_order=(0, 0, 0, 52),
+                              exog=exog_full_P_prod,
                               enforce_stationarity=False,
                               enforce_invertibility=False).fit(disp=False)
     final_fc_P_produsen = m_final_P_prod.forecast(steps=FORECAST_HORIZON, exog=exog_fc_P_prod).values
@@ -684,6 +682,7 @@ with DAG(
     )
 
     # Task 3-8: Preprocessing per dataset (paralel)
+    # df_M_produsen menggunakan week_end=True sesuai forecast.ipynb
     preprocessing_tasks = {
         ds: PythonOperator(
             task_id=f"preprocessing_{ds}",

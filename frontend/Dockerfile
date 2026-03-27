@@ -1,19 +1,22 @@
-# Development stage
+# Production stage
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
 FROM node:18-alpine
 
 WORKDIR /app
 
-# Copy package files
-COPY package.json package-lock.json ./
+RUN npm install -g serve
 
-# Install dependencies
-RUN npm ci
+COPY --from=builder /app/build ./build
 
-# Copy application code
-COPY . .
-
-# Expose port
 EXPOSE 3000
 
-# Run the application in development mode
-CMD ["npm", "run", "dev"]
+CMD ["serve", "-s", "build", "-l", "3000"]

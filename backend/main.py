@@ -5,6 +5,7 @@ from app.routes_dashboard import router as dashboard_router
 from app.routes_data import router as data_router
 from app.routes_prediksi import router as prediksi_router
 from app.config import settings
+from app.database import get_supabase
 
 app = FastAPI(
     title="BULOG Dashboard API",
@@ -45,7 +46,12 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    try:
+        supabase = get_supabase()
+        supabase.table("user").select("id").limit(1).execute()
+        return {"status": "healthy", "db": "connected"}
+    except Exception:
+        return {"status": "healthy", "db": "disconnected"}
 
 if __name__ == "__main__":
     import uvicorn

@@ -389,7 +389,7 @@ def align_exog_multi(series_list, target_index):
 # ─────────────────────────────────────────────────────────────────────────────
 # FUNGSI FIT MODEL FIXED (dari Cell 10 notebook)
 # ─────────────────────────────────────────────────────────────────────────────
-def fit_dengan_garch(model_fit, test, exog_test, model_label, test_size):
+def fit_dengan_garch(model_fit, test, exog_test, model_label, test_size, force_no_garch=False):
     """
     Setelah model ARIMA/SARIMAX di-fit:
     1. Uji ARCH pada residual
@@ -400,39 +400,43 @@ def fit_dengan_garch(model_fit, test, exog_test, model_label, test_size):
     sarimax_fc = model_fit.forecast(steps=test_size, exog=exog_test)
     residuals  = model_fit.resid.dropna()
 
-    stat, pval, _, _ = het_arch(residuals, nlags=12)
-    print(f"  ARCH Test: stat={stat:.4f}, p={pval:.4f}", end="")
-
     lo, hi = None, None
-    if pval >= 0.05:
-        print(" -> tidak ada efek ARCH, GARCH dilewati")
+    if force_no_garch:
+        print("  GARCH dilewati (force_no_garch=True)")
         fc_vals = sarimax_fc.values
     else:
-        print(" -> ada efek ARCH, fit GARCH(1,1)")
-        garch     = arch_model(residuals, vol="Garch", p=1, q=1, dist="normal")
-        garch_fit = garch.fit(disp="off")
-        fc_garch  = garch_fit.forecast(horizon=test_size)
-        garch_var = fc_garch.variance.values[-1]
-        garch_std = np.sqrt(garch_var)
-        fc_vals   = sarimax_fc.values
-        lo        = fc_vals - 1.96 * garch_std
-        hi        = fc_vals + 1.96 * garch_std
+        stat, pval, _, _ = het_arch(residuals, nlags=12)
+        print(f"  ARCH Test: stat={stat:.4f}, p={pval:.4f}", end="")
+
+        if pval >= 0.05:
+            print(" -> tidak ada efek ARCH, GARCH dilewati")
+            fc_vals = sarimax_fc.values
+        else:
+            print(" -> ada efek ARCH, fit GARCH(1,1)")
+            garch     = arch_model(residuals, vol="Garch", p=1, q=1, dist="normal")
+            garch_fit = garch.fit(disp="off")
+            fc_garch  = garch_fit.forecast(horizon=test_size)
+            garch_var = fc_garch.variance.values[-1]
+            garch_std = np.sqrt(garch_var)
+            fc_vals   = sarimax_fc.values
+            lo        = fc_vals - 1.96 * garch_std
+            hi        = fc_vals + 1.96 * garch_std
 
     metrik = hitung_metrik(test.values, fc_vals, label=model_label)
     return fc_vals, metrik, lo, hi
 
 
-def fit_arima_fixed(train, test, order, exog_train=None, exog_test=None):
+def fit_arima_fixed(train, test, order, exog_train=None, exog_test=None, force_no_garch=False):
     """Fit ARIMA/ARIMAX dengan order fixed, lalu uji ARCH."""
     p, d, q   = order
     has_exog  = exog_train is not None
     label     = f"{'ARIMAX' if has_exog else 'ARIMA'}({p},{d},{q})"
     print(f"\n  Fitting {label}...")
     m = ARIMA(train, order=order, exog=exog_train).fit()
-    return fit_dengan_garch(m, test, exog_test, label, len(test))
+    return fit_dengan_garch(m, test, exog_test, label, len(test), force_no_garch=force_no_garch)
 
 
-def fit_sarimax_fixed(train, test, order, seasonal_order, exog_train=None, exog_test=None):
+def fit_sarimax_fixed(train, test, order, seasonal_order, exog_train=None, exog_test=None, force_no_garch=False):
     """Fit SARIMA/SARIMAX dengan order fixed, lalu uji ARCH."""
     p, d, q   = order
     P, D, Q, m_period = seasonal_order
@@ -442,7 +446,7 @@ def fit_sarimax_fixed(train, test, order, seasonal_order, exog_train=None, exog_
     m = SARIMAX(train, order=order, seasonal_order=seasonal_order,
                 exog=exog_train,
                 enforce_stationarity=False, enforce_invertibility=False).fit(disp=False)
-    return fit_dengan_garch(m, test, exog_test, label, len(test))
+    return fit_dengan_garch(m, test, exog_test, label, len(test), force_no_garch=force_no_garch)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
