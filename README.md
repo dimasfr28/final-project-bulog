@@ -277,7 +277,7 @@ SECRET_KEY=<random-string-panjang-minimal-32-karakter>
 ALGORITHM=HS256
 
 # Kredensial Login Default
-DEFAULT_USERNAME=bulog-jatim
+DEFAULT_USERNAME=<rahasia>
 DEFAULT_PASSWORD=<password-aman>
 
 # API Server
